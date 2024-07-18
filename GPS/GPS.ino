@@ -10,7 +10,6 @@ static const int RXPin = 4, TXPin = 3;
 static const uint32_t GPSBaud = 9600;
 TinyGPSPlus gps;
 SoftwareSerial ss(RXPin, TXPin);
-const int timezoneOffset = 7;
 
 // MPU6050 settings
 MPU6050 mpu;
@@ -27,7 +26,7 @@ const float alpha = 0.1;
 unsigned long previousTime = 0;
 float gz_offset = 0;
 const float gyroscopeThreshold = 2; // Sesuaikan threshold gyroscopic
-float initialRoll = 0, initialPitch = 0;
+float initialRoll = 0, initialPitch = 0, initialYaw = 0;
 const float accelerometerThreshold = 2; // Sesuaikan threshold accelerometer
 
 void setup() {
@@ -67,6 +66,7 @@ void setup() {
 
   initialRoll = atan2(filtered_ay, filtered_az) * 180 / PI;
   initialPitch = atan2(-filtered_ax, sqrt(filtered_ay * filtered_ay + filtered_az * filtered_az)) * 180 / PI;
+  initialYaw = 0;  // Assuming initial yaw is 0
 }
 
 void loop() {
@@ -145,5 +145,10 @@ void bacaMPU6050() {
     // Normalize Yaw angle to [-180, 180]
     while (data.Yaw > 180) data.Yaw -= 360;
     while (data.Yaw < -180) data.Yaw += 360;
+  }
+
+  // Check if Yaw is in the initial position
+  if (abs(data.Yaw - initialYaw) < gyroscopeThreshold) {
+    data.Yaw = 0; // Return to zero if in the initial position
   }
 }
