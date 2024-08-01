@@ -2,6 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtLocation 5.15
 import QtPositioning 5.15
+import QtQml.XmlListModel 6.7
 
 ApplicationWindow {
     visible: true
@@ -12,6 +13,7 @@ ApplicationWindow {
     property real yawTersaring: 0
     property real pitchTersaring: 0
     property real rollTersaring: 0
+    property real accuracyTersaring: 0
     property real alpha: 0.1 // Faktor penyaringan untuk EMA
     property string searchLocation: "" // Menyimpan lokasi pencarian
 
@@ -38,11 +40,15 @@ ApplicationWindow {
         center: QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude)
         zoomLevel: 14 // Sesuaikan level zoom yang diinginkan
 
-        Image {
-            source: "qrc:/placeholder.png" // Sesuaikan dengan path gambar placeholder
-            width: 20
-            height: 20
-            anchors.centerIn: parent // Memposisikan gambar di tengah peta
+        // Menampilkan gambar placeholder.png di lokasi GPS
+        MapQuickItem {
+             id: gpsMarker
+             coordinate: QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude)
+             sourceItem: Image {
+                 source: "qrc:/placeholder.png" // Sesuaikan dengan path gambar placeholder
+                 width: 20
+                 height: 20
+            }
         }
 
         MapPolyline {
@@ -52,17 +58,18 @@ ApplicationWindow {
             path: waypoints
         }
 
+        // Menampilkan penanda lokasi tujuan
         MapQuickItem {
             id: destinationMarker
             coordinate: destination
             sourceItem: Image {
-                source: "qrc:/pgs_biru.png"
+                source: "qrc:/pgs_biru.png" // Path gambar pgs_biru
                 width: 15
                 height: 20
             }
         }
 
-
+        // MapItemView untuk menampilkan hasil pencarian lokasi
         MapItemView {
             id: searchModel
             model: PlaceSearchModel {
@@ -76,7 +83,7 @@ ApplicationWindow {
                 coordinate: QtPositioning.coordinate(model.latitude, model.longitude)
                 sourceItem: Image {
                     id: image
-                    source: "qrc:/placeholder.png"
+                    source: "qrc:/pgs_biru.png"
                     width: 20
                     height: 20
                 }
@@ -170,139 +177,143 @@ ApplicationWindow {
         }
     }
 
-    Image {
-        id: compassImage
-        source: "qrc:/compas1.png" // Sesuaikan path gambar kompas Anda
-        width: 150
-        height: 150
+    Rectangle {
+        width: 350
+        height: 170
+        radius: 10
+        color: Qt.rgba(1, 1, 1, 0.5)
+        border.color: "black" // Optional: Tambahkan border untuk memperjelas batas box
+
         anchors.bottom: parent.bottom
         anchors.right: parent.right
         anchors.bottomMargin: 10
         anchors.rightMargin: 10
 
-        Image {
-            id: pesawatImage
-            source: "qrc:/z2.png" // Path gambar pesawat
-            width: 70
-            height: 70
-            smooth: true // Menambahkan smooth untuk animasi yang lebih halus
-            anchors.centerIn: parent
-            opacity: 0.8 // Atur nilai opacity sesuai kebutuhan (0.0 - 1.0)
 
-            transform: [
-                Rotation {
-                    id: rotationYaw
-                    origin.x: pesawatImage.width / 2
-                    origin.y: pesawatImage.height / 2
-                    angle: mainWindow.yaw
-                    axis { x: 0; y: 0; z: 1 }
-                },
-                Rotation {
+    // Gambar kompas di bagian kanan bawah
+
+        Image {
+            id: compassImage
+            source: "qrc:/compas1.png" // Sesuaikan path gambar kompas Anda
+            width: 150
+            height: 150
+            anchors.bottom: parent.bottom
+            anchors.right: parent.right
+            anchors.bottomMargin: 10
+            anchors.rightMargin: 10
+
+            Image {
+                id: pesawatImage
+                source: "qrc:/z2.png" // Path gambar pesawat
+                width: 70
+                height: 70
+                smooth: true // Menambahkan smooth untuk animasi yang lebih halus
+                anchors.centerIn: parent
+                opacity: 0.8 // Atur nilai opacity sesuai kebutuhan (0.0 - 1.0)
+
+                transform: [
+                    Rotation {
+                        id: rotationYaw
+                        origin.x: pesawatImage.width / 2
+                        origin.y: pesawatImage.height / 2
+                        angle: mainWindow.yaw
+                        axis { x: 0; y: 0; z: 1 }
+                    },
+                    Rotation {
                     id: rotationPitch
                     origin.x: pesawatImage.width / 2
                     origin.y: pesawatImage.height / 2
                     angle: mainWindow.pitch
                     axis { x: 1; y: 0; z: 0 }
-                },
-                Rotation {
-                    id: rotationRoll
-                    origin.x: pesawatImage.width / 2
-                    origin.y: pesawatImage.height / 2
-                    angle: mainWindow.roll
-                    axis { x: 0; y: 1; z: 0 }
-                }
-            ]
-            Behavior on transform {
-                SequentialAnimation {
-                    NumberAnimation {
-                        target: rotationYaw
-                        property: "angle"
-                        duration: 200
-                        easing.type: Easing.InOutQuad
+                    },
+                    Rotation {
+                        id: rotationRoll
+                        origin.x: pesawatImage.width / 2
+                        origin.y: pesawatImage.height / 2
+                        angle: mainWindow.roll
+                        axis { x: 0; y: 1; z: 0 }
                     }
-                    NumberAnimation {
-                        target: rotationPitch
-                        property: "angle"
-                        duration: 200
-                        easing.type: Easing.InOutQuad
-                    }
-                    NumberAnimation {
-                        target: rotationRoll
-                        property: "angle"
-                        duration: 200
-                        easing.type: Easing.InOutQuad
-                    }
-                }
+                ]
             }
         }
-    }
 
-    Column {
-        anchors.right: compassImage.left
-        anchors.bottom: compassImage.bottom
-        anchors.rightMargin: 10
-        anchors.bottomMargin: 15
+
+
+        Column {
+            anchors.right: compassImage.left
+            anchors.bottom: compassImage.bottom
+            anchors.rightMargin: 10
+            anchors.bottomMargin: 15
 
         // Yaw value text
-        Text {
-            text: "Yaw: " + mainWindow.yaw.toFixed(2) // Memformat nilai yaw dengan dua desimal
-            font.pointSize: 12
-        }
+            Text {
+                text: "Yaw: " + mainWindow.yaw.toFixed(2) // Memformat nilai yaw dengan dua desimal
+                font.pointSize: 12
+            }
 
         // Pitch value text
-        Text {
-            text: "Pitch: " + mainWindow.pitch.toFixed(2) // Memformat nilai pitch dengan dua desimal
-            font.pointSize: 12
-        }
+            Text {
+                text: "Pitch: " + mainWindow.pitch.toFixed(2) // Memformat nilai pitch dengan dua desimal
+                font.pointSize: 12
+            }
 
         // Roll value text
-        Text {
-            text: "Roll: " + mainWindow.roll.toFixed(2) // Memformat nilai roll dengan dua desimal
-            font.pointSize: 12
-        }
+            Text {
+                text: "Roll: " + mainWindow.roll.toFixed(2) // Memformat nilai roll dengan dua desimal
+                font.pointSize: 12
+            }
+
+            Text {
+                text: "Accuracy: " + mainWindow.accuracy.toFixed(2) + " Meter" // Memformat nilai roll dengan dua desimal
+                font.pointSize: 12
+            }
 
         // Latitude value text
-        Text {
-            text: "Latitude: " + mainWindow.latitude.toFixed(6) // Memformat nilai latitude dengan enam desimal
-            font.pointSize: 12
-        }
+            Text {
+                text: "Latitude: " + mainWindow.latitude.toFixed(6) // Memformat nilai latitude dengan enam desimal
+                font.pointSize: 12
+            }
 
         // Longitude value text
-        Text {
-            text: "Longitude: " + mainWindow.longitude.toFixed(6) // Memformat nilai longitude dengan enam desimal
-            font.pointSize: 12
+            Text {
+                text: "Longitude: " + mainWindow.longitude.toFixed(6) // Memformat nilai longitude dengan enam desimal
+                font.pointSize: 12
+            }
         }
     }
 
-    function geocodeAddress(address) {
-        var url = "https://nominatim.openstreetmap.org/search?q=" + encodeURIComponent(address) + "&format=json&addressdetails=1";
-        console.log("Geocode URL: " + url);
-        var request = new XMLHttpRequest();
-        request.open("GET", url, true);
-        request.onreadystatechange = function() {
-            if (request.readyState === XMLHttpRequest.DONE) {
-                if (request.status === 200) {
-                    var geocodeResponse = JSON.parse(request.responseText);
-                    console.log("Geocode Response: " + request.responseText);
-                    if (geocodeResponse.length > 0) {
-                        var firstResult = geocodeResponse[0];
-                        var latitude = parseFloat(geocodeResponse[0].lat);
-                        var longitude = parseFloat(geocodeResponse[0].lon);
-                        console.log("Geocoded Latitude: " + latitude + ", Longitude: " + longitude);
-                        map.center = QtPositioning.coordinate(latitude, longitude);
-                        map.zoomLevel = 14;
-                        waypoints = [
-                            QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude),
-                            QtPositioning.coordinate(latitude, longitude)
-                        ];
-                    } else {
-                        console.log("Location not found");
-                    }
-                } else {
-                    console.log("Geocoding request failed: " + request.status);
-                }
-            }
-        }
-        request.send();
-    }
-}
+
+    // Fungsi untuk geocode address
+     function geocodeAddress(address) {
+         var url = "https://nominatim.openstreetmap.org/search?q=" + encodeURIComponent(address) + "&format=json&addressdetails=1";
+         console.log("Geocode URL: " + url);
+         var request = new XMLHttpRequest();
+         request.open("GET", url, true);
+         request.onreadystatechange = function() {
+             if (request.readyState === XMLHttpRequest.DONE) {
+                 if (request.status === 200) {
+                     var geocodeResponse = JSON.parse(request.responseText);
+                     console.log("Geocode Response: " + request.responseText);
+                     if (geocodeResponse.length > 0) {
+                         var firstResult = geocodeResponse[0];
+                         var latitude = parseFloat(geocodeResponse[0].lat);
+                         var longitude = parseFloat(geocodeResponse[0].lon);
+                         console.log("Geocoded Latitude: " + latitude + ", Longitude: " + longitude);
+                         map.center = QtPositioning.coordinate(latitude, longitude);
+                         map.zoomLevel = 14;
+                         destination = QtPositioning.coordinate(latitude, longitude);
+                         waypoints = [
+                             QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude),
+                             destination
+                         ];
+                     } else {
+                         console.log("Location not found");
+                     }
+                 } else {
+                     console.log("Geocoding request failed: " + request.status);
+                 }
+             }
+         }
+         request.send();
+     }
+ }
