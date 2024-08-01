@@ -1,319 +1,189 @@
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtLocation 5.15
-import QtPositioning 5.15
-import QtQml.XmlListModel 6.7
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include "Wire.h"
+#include "I2Cdev.h"
+#include "MPU6050.h"
+#include <ArduinoJson.h>
 
-ApplicationWindow {
-    visible: true
-    width: 640
-    height: 480
-    title: qsTr("Arduino Data Display")
+// GPS settings
+static const int RXPin = 4, TXPin = 3;
+static const uint32_t GPSBaud = 9600;
+TinyGPSPlus gps;
+SoftwareSerial ss(RXPin, TXPin);
 
-    property real yawTersaring: 0
-    property real pitchTersaring: 0
-    property real rollTersaring: 0
-    property real accuracyTersaring: 0
-    property real alpha: 0.1 // Faktor penyaringan untuk EMA
-    property string searchLocation: "" // Menyimpan lokasi pencarian
+// MPU6050 settings
+MPU6050 mpu;
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
+struct MyData {
+  float Roll;
+  float Pitch;
+  float Yaw;
+};
+MyData data;
+float filtered_ax = 0, filtered_ay = 0, filtered_az = 0;
+const float alpha = 0.1;
+unsigned long previousTime = 0;
+float gz_offset = 0;
+const float gyroscopeThreshold = 2; // Sesuaikan threshold giroskop
+const float accelerometerThreshold = 2; // Sesuaikan threshold akselerometer
+const float yawDriftThreshold = 0.5; // Threshold untuk drift yaw
+float initialRoll = 0, initialPitch = 0, initialYaw = 0;
+bool initialYawSet = false; // Flag untuk menyimpan nilai yaw awal
 
-    property var destination: QtPositioning.coordinate() // Menyimpan koordinat tujuan
-    property var waypoints: [
-        QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude),
-        QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude)
-    ]
+// GPS data averaging
+const int numReadings = 10;
+float latitudeReadings[numReadings];
+float longitudeReadings[numReadings];
+int readIndex = 0;
+float totalLat = 0;
+float totalLng = 0;
+float averagedLat = 0;
+float averagedLng = 0;
 
-    // Fungsi untuk menerapkan EMA pada yaw
-    function terapkanEMA(namaProperti, nilaiBaru) {
-        root[namaProperti] = root.alpha * nilaiBaru + (1 - root.alpha) * root[namaProperti]
-    }
+void setup() {
+  Serial.begin(9600); // Menginisialisasi komunikasi serial dengan baud rate 9600
+  ss.begin(GPSBaud);  // Menginisialisasi komunikasi serial dengan modul GPS
 
-    Plugin {
-        id: mapPlugin
-        name: "osm" // Menggunakan OpenStreetMap
-    }
+  Wire.begin();       // Menginisialisasi komunikasi I2C
+  mpu.initialize();   // Menginisialisasi sensor MPU6050
 
-    Map {
-        id: map
-        anchors.fill: parent
-        plugin: mapPlugin
-        center: QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude)
-        zoomLevel: 14 // Sesuaikan level zoom yang diinginkan
+  if (mpu.testConnection()) {
+    Serial.println("MPU6050 terhubung"); // Menampilkan pesan jika sensor terhubung
+  } else {
+    Serial.println("MPU6050 tidak terhubung"); // Menampilkan pesan jika sensor tidak terhubung
+    while (1); // Menghentikan program jika sensor tidak terhubung
+  }
 
-        // Menampilkan gambar placeholder.png di lokasi GPS
-        MapQuickItem {
-             id: gpsMarker
-             coordinate: QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude)
-             sourceItem: Image {
-                 source: "qrc:/placeholder.png" // Sesuaikan dengan path gambar placeholder
-                 width: 20
-                 height: 20
-            }
-        }
+  Serial.println("Kalibrasi giroskop, harap jangan gerakkan sensor...");
 
-        MapPolyline {
-            id: routePolyline
-            line.width: 5
-            line.color: 'blue'
-            path: waypoints
-        }
+  int numSamples = 100; // Jumlah sampel untuk kalibrasi
+  long gz_sum = 0;
 
-        // Menampilkan penanda lokasi tujuan
-        MapQuickItem {
-            id: destinationMarker
-            coordinate: destination
-            sourceItem: Image {
-                source: "qrc:/pgs_biru.png" // Path gambar pgs_biru
-                width: 15
-                height: 20
-            }
-        }
+  for (int i = 0; i < numSamples; i++) {
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Membaca data sensor
+    gz_sum += gz; // Menjumlahkan nilai gz
+    delay(10); // Menunggu selama 10 milidetik
+  }
 
-        // MapItemView untuk menampilkan hasil pencarian lokasi
-        MapItemView {
-            id: searchModel
-            model: PlaceSearchModel {
-                plugin: mapPlugin
-                searchTerm: searchLocation
-            }
+  gz_offset = gz_sum / numSamples / 131.0; // Menghitung offset giroskop
 
-            delegate: MapQuickItem {
-                anchorPoint.x: image.width / 2
-                anchorPoint.y: image.height
-                coordinate: QtPositioning.coordinate(model.latitude, model.longitude)
-                sourceItem: Image {
-                    id: image
-                    source: "qrc:/pgs_biru.png"
-                    width: 20
-                    height: 20
-                }
-            }
-        }
+  Serial.println("Kalibrasi selesai");
 
-        PinchHandler {
-            id: pinch
-            target: null
-            onActiveChanged: if (active) {
-                map.startCentroid = map.toCoordinate(pinch.centroid.position, false)
-            }
-            onScaleChanged: (delta) => {
-                map.zoomLevel += Math.log2(delta)
-                map.alignCoordinateToPoint(map.startCentroid, pinch.centroid.position)
-            }
-            onRotationChanged: (delta) => {
-                map.bearing -= delta
-                map.alignCoordinateToPoint(map.startCentroid, pinch.centroid.position)
-            }
-            grabPermissions: PointerHandler.TakeOverForbidden
-        }
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Membaca data sensor
+  filtered_ax = ax; // Menginisialisasi nilai filter
+  filtered_ay = ay;
+  filtered_az = az;
 
-        // Handler untuk pengaturan zoom menggunakan roda mouse
-        WheelHandler {
-            id: wheel
-            acceptedDevices: Qt.platform.pluginName === "cocoa" || Qt.platform.pluginName === "wayland"
-                             ? PointerDevice.Mouse | PointerDevice.TouchPad
-                             : PointerDevice.Mouse
-            rotationScale: 1/120
-            property: "zoomLevel"
-        }
+  initialRoll = atan2(filtered_ay, filtered_az) * 180 / PI; // Menghitung roll awal
+  initialPitch = atan2(-filtered_ax, sqrt(filtered_ay * filtered_ay + filtered_az * filtered_az)) * 180 / PI; // Menghitung pitch awal
+  initialYaw = 0;  // Asumsi yaw awal adalah 0
+  initialYawSet = true; // Mengaktifkan flag nilai yaw awal
 
-        // Handler untuk menggeser peta dengan drag
-        DragHandler {
-            id: drag
-            target: null
-            onTranslationChanged: (delta) => map.pan(-delta.x, -delta.y)
-        }
+  // Initialize GPS data averaging
+  for (int i = 0; i < numReadings; i++) {
+    latitudeReadings[i] = 0;
+    longitudeReadings[i] = 0;
+  }
+}
 
-        // MouseArea untuk menangani double click pada peta
-        MouseArea {
-            anchors.fill: parent
-            onDoubleClicked: {
-                destination = map.toCoordinate(Qt.point(mouse.x, mouse.y));
-                waypoints = [
-                    QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude),
-                    destination
-                ];
-            }
-        }
+void loop() {
+  // Menangani data GPS
+  while (ss.available() > 0) {
+    char c = ss.read(); // Membaca data dari modul GPS
+    gps.encode(c);
+  }
 
-        // Shortcut untuk zoom in menggunakan keyboard
-        Shortcut {
-            enabled: map.zoomLevel < map.maximumZoomLevel
-            sequence: StandardKey.ZoomIn
-            onActivated: map.zoomLevel = Math.round(map.zoomLevel + 1)
-        }
+  if (gps.location.isValid()) {
+    // Membaca data GPS
+    float latitude = gps.location.lat();
+    float longitude = gps.location.lng();
+    float hdop = gps.hdop.hdop(); // Membaca nilai HDOP
+    float accuracy = hdop * 5.0; // Mengestimasi akurasi dalam meter (perkiraan)
 
-        TextField {
-            id: searchInput
-            placeholderText: "Cari lokasi..."
-            width: 150
-            height: 20 // Atur tinggi TextField sesuai keinginan
-            anchors {
-                top: parent.top
-                right: parent.right
-                topMargin: 10 // Atur margin dari atas
-                rightMargin: 10 // Atur margin dari kanan
-            }
-            onAccepted: {
-                geocodeAddress(text);
-            }
-        }
+    // Update GPS data averaging
+    totalLat -= latitudeReadings[readIndex];
+    totalLng -= longitudeReadings[readIndex];
+    latitudeReadings[readIndex] = latitude;
+    longitudeReadings[readIndex] = longitude;
+    totalLat += latitude;
+    totalLng += longitude;
+    readIndex = (readIndex + 1) % numReadings;
+    averagedLat = totalLat / numReadings;
+    averagedLng = totalLng / numReadings;
 
-        Slider {
-            id: zoomSlider
-            from: map.minimumZoomLevel
-            to: map.maximumZoomLevel
-            value: map.zoomLevel
-            stepSize: 1
-            anchors {
-                top: searchInput.bottom
-                topMargin: 10
-                right: parent.right
-                rightMargin: 10
-            }
-            onValueChanged: {
-                map.zoomLevel = value;
-            }
-        }
-    }
+    // Membaca data MPU6050
+    bacaMPU6050();
 
-    Rectangle {
-        width: 350
-        height: 170
-        radius: 10
-        color: Qt.rgba(1, 1, 1, 0.5)
-        border.color: "black" // Optional: Tambahkan border untuk memperjelas batas box
+    // Menyiapkan data JSON
+    StaticJsonDocument<150> doc; // Ukuran dokumen ditingkatkan untuk menyertakan akurasi
+    doc["latitude"] = averagedLat;
+    doc["longitude"] = averagedLng;
+    doc["accuracy"] = accuracy; // Menambahkan akurasi ke dalam JSON
+    doc["roll"] = data.Roll;
+    doc["pitch"] = data.Pitch;
+    doc["yaw"] = data.Yaw;
 
-        anchors.bottom: parent.bottom
-        anchors.right: parent.right
-        anchors.bottomMargin: 10
-        anchors.rightMargin: 10
+    // Men-serialisasi JSON ke string dan mencetaknya
+    String jsonString;
+    serializeJson(doc, jsonString);
+    Serial.println(jsonString); // Menampilkan data JSON melalui serial
+  }
 
+  if (millis() > 5000 && gps.charsProcessed() < 10) {
+    Serial.println("Tidak ada GPS terdeteksi: periksa kabel.");
+    while (true); // Menghentikan program jika GPS tidak terdeteksi
+  }
+}
 
-    // Gambar kompas di bagian kanan bawah
+void bacaMPU6050() {
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Membaca data dari sensor MPU6050
 
-        Image {
-            id: compassImage
-            source: "qrc:/compas1.png" // Sesuaikan path gambar kompas Anda
-            width: 150
-            height: 150
-            anchors.bottom: parent.bottom
-            anchors.right: parent.right
-            anchors.bottomMargin: 10
-            anchors.rightMargin: 10
+  // Memfilter data akselerometer
+  filtered_ax = alpha * ax + (1 - alpha) * filtered_ax;
+  filtered_ay = alpha * ay + (1 - alpha) * filtered_ay;
+  filtered_az = alpha * az + (1 - alpha) * filtered_az;
 
-            Image {
-                id: pesawatImage
-                source: "qrc:/z2.png" // Path gambar pesawat
-                width: 70
-                height: 70
-                smooth: true // Menambahkan smooth untuk animasi yang lebih halus
-                anchors.centerIn: parent
-                opacity: 0.8 // Atur nilai opacity sesuai kebutuhan (0.0 - 1.0)
+  // Menghitung sudut Roll dan Pitch
+  float currentRoll = atan2(filtered_ay, filtered_az) * 180 / PI;
+  float currentPitch = atan2(-filtered_ax, sqrt(filtered_ay * filtered_ay + filtered_az * filtered_az)) * 180 / PI;
 
-                transform: [
-                    Rotation {
-                        id: rotationYaw
-                        origin.x: pesawatImage.width / 2
-                        origin.y: pesawatImage.height / 2
-                        angle: mainWindow.yaw
-                        axis { x: 0; y: 0; z: 1 }
-                    },
-                    Rotation {
-                    id: rotationPitch
-                    origin.x: pesawatImage.width / 2
-                    origin.y: pesawatImage.height / 2
-                    angle: mainWindow.pitch
-                    axis { x: 1; y: 0; z: 0 }
-                    },
-                    Rotation {
-                        id: rotationRoll
-                        origin.x: pesawatImage.width / 2
-                        origin.y: pesawatImage.height / 2
-                        angle: mainWindow.roll
-                        axis { x: 0; y: 1; z: 0 }
-                    }
-                ]
-            }
-        }
+  // Memeriksa perubahan signifikan pada Roll dan Pitch
+  if (abs(currentRoll - initialRoll) < accelerometerThreshold) {
+    data.Roll = 0; // Mengembalikan ke nol jika di posisi awal
+  } else {
+    data.Roll = currentRoll;
+  }
 
+  if (abs(currentPitch - initialPitch) < accelerometerThreshold) {
+    data.Pitch = 0; // Mengembalikan ke nol jika di posisi awal
+  } else {
+    data.Pitch = currentPitch;
+  }
 
+  // Menghitung deltaTime untuk integrasi Yaw
+  unsigned long currentTime = millis();
+  float deltaTime = (currentTime - previousTime) / 1000.0;
+  previousTime = currentTime;
 
-        Column {
-            anchors.right: compassImage.left
-            anchors.bottom: compassImage.bottom
-            anchors.rightMargin: 10
-            anchors.bottomMargin: 15
+  // Mengkalibrasi Giroskop
+  float gz_calibrated = gz / 131.0 - gz_offset;
 
-        // Yaw value text
-            Text {
-                text: "Yaw: " + mainWindow.yaw.toFixed(2) // Memformat nilai yaw dengan dua desimal
-                font.pointSize: 12
-            }
+  // Menerapkan threshold untuk mengabaikan perubahan kecil
+  if (abs(gz_calibrated) > gyroscopeThreshold) {
+    // Mengintegrasikan kecepatan sudut untuk mendapatkan Yaw
+    data.Yaw += gz_calibrated * deltaTime;
 
-        // Pitch value text
-            Text {
-                text: "Pitch: " + mainWindow.pitch.toFixed(2) // Memformat nilai pitch dengan dua desimal
-                font.pointSize: 12
-            }
+    // Menormalkan sudut Yaw ke [-180, 180]
+    while (data.Yaw > 180) data.Yaw -= 360;
+    while (data.Yaw < -180) data.Yaw += 360;
+  }
 
-        // Roll value text
-            Text {
-                text: "Roll: " + mainWindow.roll.toFixed(2) // Memformat nilai roll dengan dua desimal
-                font.pointSize: 12
-            }
+  // Menghitung total perubahan yaw dari nilai awal
+  float deltaYaw = data.Yaw - initialYaw;
 
-            Text {
-                text: "Accuracy: " + mainWindow.accuracy.toFixed(2) + " Meter" // Memformat nilai roll dengan dua desimal
-                font.pointSize: 12
-            }
-
-        // Latitude value text
-            Text {
-                text: "Latitude: " + mainWindow.latitude.toFixed(6) // Memformat nilai latitude dengan enam desimal
-                font.pointSize: 12
-            }
-
-        // Longitude value text
-            Text {
-                text: "Longitude: " + mainWindow.longitude.toFixed(6) // Memformat nilai longitude dengan enam desimal
-                font.pointSize: 12
-            }
-        }
-    }
-
-
-    // Fungsi untuk geocode address
-     function geocodeAddress(address) {
-         var url = "https://nominatim.openstreetmap.org/search?q=" + encodeURIComponent(address) + "&format=json&addressdetails=1";
-         console.log("Geocode URL: " + url);
-         var request = new XMLHttpRequest();
-         request.open("GET", url, true);
-         request.onreadystatechange = function() {
-             if (request.readyState === XMLHttpRequest.DONE) {
-                 if (request.status === 200) {
-                     var geocodeResponse = JSON.parse(request.responseText);
-                     console.log("Geocode Response: " + request.responseText);
-                     if (geocodeResponse.length > 0) {
-                         var firstResult = geocodeResponse[0];
-                         var latitude = parseFloat(geocodeResponse[0].lat);
-                         var longitude = parseFloat(geocodeResponse[0].lon);
-                         console.log("Geocoded Latitude: " + latitude + ", Longitude: " + longitude);
-                         map.center = QtPositioning.coordinate(latitude, longitude);
-                         map.zoomLevel = 14;
-                         destination = QtPositioning.coordinate(latitude, longitude);
-                         waypoints = [
-                             QtPositioning.coordinate(mainWindow.latitude, mainWindow.longitude),
-                             destination
-                         ];
-                     } else {
-                         console.log("Location not found");
-                     }
-                 } else {
-                     console.log("Geocoding request failed: " + request.status);
-                 }
-             }
-         }
-         request.send();
-     }
- }
+  // Memeriksa jika Yaw kembali ke posisi awal
+  if (abs(deltaYaw) < yawDriftThreshold) {
+    data.Yaw = initialYaw; // Mengembalikan ke nilai awal jika di posisi awal
+  }
+}
