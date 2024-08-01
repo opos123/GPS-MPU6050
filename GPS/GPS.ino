@@ -25,130 +25,165 @@ float filtered_ax = 0, filtered_ay = 0, filtered_az = 0;
 const float alpha = 0.1;
 unsigned long previousTime = 0;
 float gz_offset = 0;
-const float gyroscopeThreshold = 2; // Sesuaikan threshold gyroscopic
+const float gyroscopeThreshold = 2; // Sesuaikan threshold giroskop
+const float accelerometerThreshold = 2; // Sesuaikan threshold akselerometer
+const float yawDriftThreshold = 0.5; // Threshold untuk drift yaw
 float initialRoll = 0, initialPitch = 0, initialYaw = 0;
-const float accelerometerThreshold = 2; // Sesuaikan threshold accelerometer
+bool initialYawSet = false; // Flag untuk menyimpan nilai yaw awal
+
+// GPS data averaging
+const int numReadings = 10;
+float latitudeReadings[numReadings];
+float longitudeReadings[numReadings];
+int readIndex = 0;
+float totalLat = 0;
+float totalLng = 0;
+float averagedLat = 0;
+float averagedLng = 0;
 
 void setup() {
-  Serial.begin(9600);
-  ss.begin(GPSBaud);
+  Serial.begin(9600); // Menginisialisasi komunikasi serial dengan baud rate 9600
+  ss.begin(GPSBaud);  // Menginisialisasi komunikasi serial dengan modul GPS
 
-  Wire.begin();
-  mpu.initialize();
+  Wire.begin();       // Menginisialisasi komunikasi I2C
+  mpu.initialize();   // Menginisialisasi sensor MPU6050
 
   if (mpu.testConnection()) {
-    Serial.println("MPU6050 terhubung");
+    Serial.println("MPU6050 terhubung"); // Menampilkan pesan jika sensor terhubung
   } else {
-    Serial.println("MPU6050 tidak terhubung");
-    while (1);
+    Serial.println("MPU6050 tidak terhubung"); // Menampilkan pesan jika sensor tidak terhubung
+    while (1); // Menghentikan program jika sensor tidak terhubung
   }
 
   Serial.println("Kalibrasi giroskop, harap jangan gerakkan sensor...");
-  delay(1000);
 
-  int numSamples = 100;
+  int numSamples = 100; // Jumlah sampel untuk kalibrasi
   long gz_sum = 0;
 
   for (int i = 0; i < numSamples; i++) {
-    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-    gz_sum += gz;
-    delay(10);
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Membaca data sensor
+    gz_sum += gz; // Menjumlahkan nilai gz
+    delay(10); // Menunggu selama 10 milidetik
   }
 
-  gz_offset = gz_sum / numSamples / 131.0;
+  gz_offset = gz_sum / numSamples / 131.0; // Menghitung offset giroskop
 
   Serial.println("Kalibrasi selesai");
 
-  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-  filtered_ax = ax;
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Membaca data sensor
+  filtered_ax = ax; // Menginisialisasi nilai filter
   filtered_ay = ay;
   filtered_az = az;
 
-  initialRoll = atan2(filtered_ay, filtered_az) * 180 / PI;
-  initialPitch = atan2(-filtered_ax, sqrt(filtered_ay * filtered_ay + filtered_az * filtered_az)) * 180 / PI;
-  initialYaw = 0;  // Assuming initial yaw is 0
+  initialRoll = atan2(filtered_ay, filtered_az) * 180 / PI; // Menghitung roll awal
+  initialPitch = atan2(-filtered_ax, sqrt(filtered_ay * filtered_ay + filtered_az * filtered_az)) * 180 / PI; // Menghitung pitch awal
+  initialYaw = 0;  // Asumsi yaw awal adalah 0
+  initialYawSet = true; // Mengaktifkan flag nilai yaw awal
+
+  // Initialize GPS data averaging
+  for (int i = 0; i < numReadings; i++) {
+    latitudeReadings[i] = 0;
+    longitudeReadings[i] = 0;
+  }
 }
 
 void loop() {
-  // Handle GPS data
-  while (ss.available() > 0) {
-    char c = ss.read();
-    if (gps.encode(c)) {
-      if (gps.location.isValid()) {
-        // Read GPS data
-        float latitude = gps.location.lat();
-        float longitude = gps.location.lng();
+  // Menangani data GPS
+  if (ss.available() > 0) {
+    char c = ss.read(); // Membaca data dari modul GPS
+    gps.encode(c);
+  }
 
-        // Read MPU6050 data
-        bacaMPU6050();
+  if (gps.location.isValid()) {
+    // Membaca data GPS
+    float latitude = gps.location.lat();
+    float longitude = gps.location.lng();
+    float hdop = gps.hdop.hdop(); // Membaca nilai HDOP
+    float accuracy = hdop * 5.0; // Mengestimasi akurasi dalam meter (perkiraan)
 
-        // Prepare JSON data
-        StaticJsonDocument<100> doc;
-        doc["latitude"] = latitude;
-        doc["longitude"] = longitude;
-        doc["roll"] = data.Roll;
-        doc["pitch"] = data.Pitch;
-        doc["yaw"] = data.Yaw;
+    // Update GPS data averaging
+    totalLat -= latitudeReadings[readIndex];
+    totalLng -= longitudeReadings[readIndex];
+    latitudeReadings[readIndex] = latitude;
+    longitudeReadings[readIndex] = longitude;
+    totalLat += latitude;
+    totalLng += longitude;
+    readIndex = (readIndex + 1) % numReadings;
+    averagedLat = totalLat / numReadings;
+    averagedLng = totalLng / numReadings;
 
-        // Serialize JSON to string and print
-        String jsonString;
-        serializeJson(doc, jsonString);
-        Serial.println(jsonString);
-      }
-    }
+    // Membaca data MPU6050
+    bacaMPU6050();
+
+    // Menyiapkan data JSON
+    StaticJsonDocument<150> doc; // Ukuran dokumen ditingkatkan untuk menyertakan akurasi
+    doc["latitude"] = averagedLat;
+    doc["longitude"] = averagedLng;
+    doc["accuracy"] = accuracy; // Menambahkan akurasi ke dalam JSON
+    doc["roll"] = data.Roll;
+    doc["pitch"] = data.Pitch;
+    doc["yaw"] = data.Yaw;
+
+    // Men-serialisasi JSON ke string dan mencetaknya
+    String jsonString;
+    serializeJson(doc, jsonString);
+    Serial.println(jsonString); // Menampilkan data JSON melalui serial
   }
 
   if (millis() > 5000 && gps.charsProcessed() < 10) {
     Serial.println("Tidak ada GPS terdeteksi: periksa kabel.");
-    while (true);
+    while (true); // Menghentikan program jika GPS tidak terdeteksi
   }
 }
 
 void bacaMPU6050() {
-  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Membaca data dari sensor MPU6050
 
-  // Filter accelerometer data
+  // Memfilter data akselerometer
   filtered_ax = alpha * ax + (1 - alpha) * filtered_ax;
   filtered_ay = alpha * ay + (1 - alpha) * filtered_ay;
   filtered_az = alpha * az + (1 - alpha) * filtered_az;
 
-  // Calculate Roll and Pitch angles
+  // Menghitung sudut Roll dan Pitch
   float currentRoll = atan2(filtered_ay, filtered_az) * 180 / PI;
   float currentPitch = atan2(-filtered_ax, sqrt(filtered_ay * filtered_ay + filtered_az * filtered_az)) * 180 / PI;
 
-  // Check if changes in Roll or Pitch are significant
+  // Memeriksa perubahan signifikan pada Roll dan Pitch
   if (abs(currentRoll - initialRoll) < accelerometerThreshold) {
-    data.Roll = 0; // Return to zero if in the initial position
+    data.Roll = 0; // Mengembalikan ke nol jika di posisi awal
   } else {
     data.Roll = currentRoll;
   }
 
   if (abs(currentPitch - initialPitch) < accelerometerThreshold) {
-    data.Pitch = 0; // Return to zero if in the initial position
+    data.Pitch = 0; // Mengembalikan ke nol jika di posisi awal
   } else {
     data.Pitch = currentPitch;
   }
 
-  // Calculate deltaTime for Yaw integration
+  // Menghitung deltaTime untuk integrasi Yaw
   unsigned long currentTime = millis();
   float deltaTime = (currentTime - previousTime) / 1000.0;
   previousTime = currentTime;
 
-  // Calibrate Gyroscope
+  // Mengkalibrasi Giroskop
   float gz_calibrated = gz / 131.0 - gz_offset;
 
-  // Apply threshold to ignore small changes
+  // Menerapkan threshold untuk mengabaikan perubahan kecil
   if (abs(gz_calibrated) > gyroscopeThreshold) {
-    // Integrate angular velocity to get Yaw
+    // Mengintegrasikan kecepatan sudut untuk mendapatkan Yaw
     data.Yaw += gz_calibrated * deltaTime;
 
-    // Normalize Yaw angle to [-180, 180]
+    // Menormalkan sudut Yaw ke [-180, 180]
     while (data.Yaw > 180) data.Yaw -= 360;
     while (data.Yaw < -180) data.Yaw += 360;
   }
 
-  // Check if Yaw is in the initial position
-  if (abs(data.Yaw - initialYaw) < gyroscopeThreshold) {
-    data.Yaw = 0; // Return to zero if in the initial position
+  // Menghitung total perubahan yaw dari nilai awal
+  float deltaYaw = data.Yaw - initialYaw;
+
+  // Memeriksa jika Yaw kembali ke posisi awal
+  if (abs(deltaYaw) < yawDriftThreshold) {
+    data.Yaw = initialYaw; // Mengembalikan ke nilai awal jika di posisi awal
   }
 }
