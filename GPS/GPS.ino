@@ -89,7 +89,7 @@ void setup() {
 
 void loop() {
   // Menangani data GPS
-  if (ss.available() > 0) {
+  while (ss.available() > 0) {
     char c = ss.read(); // Membaca data dari modul GPS
     gps.encode(c);
   }
